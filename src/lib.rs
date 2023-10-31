@@ -1,28 +1,88 @@
-use geometric::{Vec3, Vec2, Cross};
-use std::f32::consts::PI;
-use sdl2::pixels::Color;
+pub mod math;
+//based on https://raytracing.github.io/books/RayTracingInOneWeekend.html
+use math::*;
+pub struct Ray {
+    origin : math::Point,
+    direction : math::Vec3
+}
+impl Ray {
+    pub fn new(origin : &Point, direction : &Vec3) -> Self {
+        Self {
+            origin : *origin,
+            direction : *direction
+        }
+    }
+    #[inline]
+    pub fn origin(&self) -> math::Point {
+        self.origin
+    }
+    #[inline]
+    pub fn direction(&self) -> math::Vec3 {
+        self.direction
+    }
+    #[inline]
+    pub fn point_at(&self, t: f32) -> math::Point {
+        self.origin + self.direction * t
+    }
+}
+
+pub struct HitRecord {
+    pub point : math::Point,
+    pub normal : math::Vec3,
+    pub t : f32,
+    pub front_face : bool
+}
+
+impl HitRecord {
+    pub fn set_face_normal(&mut self, ray : &Ray, out_normal : &math::Vec3){
+        self.front_face = ray.direction().dot(out_normal) < 0.0;
+        self.normal = if self.front_face {
+            *out_normal
+        } else {
+            -(*out_normal)
+        };
+    }
+}
+pub trait Hit {
+    fn hit(&self, ray : &Ray, ray_min : f32, ray_max : f32) -> Option<HitRecord>;
+}
+
 pub struct Sphere {
-    pub loc : Vec3<f32>,
+    pub loc : Point,
     pub radius : f32,
     pub color : Color
 } 
-//https://en.wikipedia.org/wiki/Ray_tracing_(graphics)
-pub fn calculate_ray(eye : &Vec3<f32>, target : &Vec3<f32>, viewport : &Vec2<u32>, i : u32, j : u32, d : f32) -> Vec3<f32> {
-    let v = Vec3{x : 0.0, y : 1.0, z : 0.0};
-    let t_n = (target - eye).normalize();
-    let b_n = t_n.cross(&v);
-    let g_x = d * (PI/4.0).tan();
-    let viewport_x = viewport.x as f32;
-    let viewport_y = viewport.y as f32;
-    let g_y = g_x * viewport_y / viewport_x;
-    let q_x = b_n * ((2.0 * g_x) / (viewport_x)); //pixel_shift_x
-    let q_y = v * ((2.0 * g_y) / (viewport_y)); //pixel_shift_y
-    let p_bottom_left = (t_n * d) - (b_n * g_x) - (v * g_y);
-    let i = i as f32;
-    let j = j as f32;
-    let p = p_bottom_left + (q_x * i) + (q_y * j);
-    p.normalize()
+
+impl Hit for Sphere {
+    fn hit(&self, ray : &Ray, ray_min : f32, ray_max : f32) -> Option<HitRecord> {
+        let origin_center = ray.origin() - self.loc;
+        let a = ray.direction().dot(&ray.direction());
+        let half_b = origin_center.dot(&ray.direction());
+        let c = origin_center.len_squared() - self.radius * self.radius;
+        let discrim = half_b * half_b - a * c;
+        if discrim < 0.0 {
+            return None
+        } 
+        let root_d = discrim.sqrt();
+        let mut root = (-half_b - root_d) / a;
+        if root <= ray_min || ray_max <= root {
+            root = (-half_b + root_d) / a;
+            if root <= ray_min || ray_max <= root {
+                return None
+            }
+        }
+        let point = ray.point_at(root);
+        let out_normal = (point - self.loc) / self.radius;
+        let mut result = HitRecord {
+            point, normal : out_normal, t : root, front_face : true 
+        };
+        result.set_face_normal(ray, &out_normal);
+        Some(result)
+    }
 }
+use std::f32::consts::PI;
+//use sdl2::pixels::Color;
+
 #[cfg(test)]
 mod tests {
     use super::*;
