@@ -1,4 +1,3 @@
-use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use std::time::{Duration, Instant};
@@ -6,7 +5,12 @@ use sdl2::surface::Surface;
 use std::thread::sleep;
 use raytrace::math::{Point, Vec3};
 use raytrace::math::Color as Color3;
-use raytrace::{Ray, Sphere, Hit};
+use raytrace::{Ray, Sphere, Hit, Camera};
+use sdl2::render::{Texture, TextureCreator, Canvas};
+use sdl2::pixels::{PixelFormatEnum, Color};
+use sdl2::video::{Window, WindowContext};
+use sdl2::VideoSubsystem;
+use core::cmp::{min, max};
 //Based on https://raytracing.github.io/books/RayTracingInOneWeekend.html
 fn calculate_ray(ray : &Ray, sphere : &Sphere) -> Color3 {
     if let Some(hit) = sphere.hit(ray, 0.0, 1000000.0){
@@ -17,35 +21,39 @@ fn calculate_ray(ray : &Ray, sphere : &Sphere) -> Color3 {
         (Color3::new(1.0, 1.0, 1.0) * (1.0 - a)) + (Color3::new(0.5, 0.7, 1.0) * a)
     } 
 }
+const BAYER_4 : [[f32; 4]; 4] = [
+    [0.0000, 0.5000, 0.1250, 0.6250],
+    [0.7500, 0.2500, 0.8750, 0.3750],
+    [0.1875, 0.6875, 0.0625, 0.5625],
+    [0.9375, 0.4375, 0.8125, 0.3125]
+];
+//https://github.com/OneLoneCoder/Javidx9/blob/master/PixelGameEngine/SmallerProjects/OneLoneCoder_PGE_Dithering.cpp
+fn quantize_n_bit<const N : usize>(color : &Color3) -> (u8, u8, u8) {
+    let levels : f32 = ((1 << N) - 1) as f32;
+    let r : u8 = unsafe {((color.0[0] * levels).round() / levels * 255.0).min(255.0).max(0.0).round().to_int_unchecked()};
+    let g : u8 = unsafe {((color.0[1] * levels).round() / levels * 255.0).min(255.0).max(0.0).round().to_int_unchecked()};
+    let b : u8 = unsafe {((color.0[2] * levels).round() / levels * 255.0).min(255.0).max(0.0).round().to_int_unchecked()};
+    return (r, g, b)
+}
+fn quantize_n_bit_ordered_dithering<const N : usize>(color : &Color3, x : u16, y : u16) -> (u8, u8, u8) {
+    let levels : f32 = ((1 << N) - 1) as f32;
+    let dither_coef = BAYER_4[(y & 3) as usize][(x & 3) as usize];
+    let r : u8 = unsafe {((color.0[0] * levels + dither_coef - 0.5).round() / levels * 255.0).min(255.0).max(0.0).round().to_int_unchecked()};
+    let g : u8 = unsafe {((color.0[1] * levels + dither_coef - 0.5).round() / levels * 255.0).min(255.0).max(0.0).round().to_int_unchecked()};
+    let b : u8 = unsafe {((color.0[2] * levels + dither_coef - 0.5).round() / levels * 255.0).min(255.0).max(0.0).round().to_int_unchecked()};
+    return (r, g, b)
+}
 pub fn main(){
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
     let window = video_subsystem.window("raytracer_demo", 640, 480).
-        position_centered().
-        build().
-        unwrap();
-    let mut canvas = window.into_canvas().build().unwrap();
-    println!("Canvas Created");
-    let texture_builder = canvas.texture_creator();
-    let mut texture = texture_builder.create_texture_streaming(PixelFormatEnum::RGB24, 640, 480).unwrap();
-    canvas.set_draw_color(Color::RGB(128, 128, 128));
-    canvas.clear();
-    canvas.present();
-    println!("Canvas presented");
-    //Camera
-    let aspect_ratio = 4.0 / 3.0;
-    let focal_len = 1.0;
-    let viewport_height = 2.0;
-    let viewport_width = aspect_ratio * viewport_height;
-    let camera_center = Point::new(0.0, 0.0, 0.0);
-    //Calculate the vectors across the horizontal and down the vertical viewport edges.
-    let viewport_u = Vec3::new(viewport_width, 0.0, 0.0);
-    let viewport_v = Vec3::new(0.0, -viewport_height, 0.0);
-    let pixel_delta_u = viewport_u / 640.0;
-    let pixel_delta_v = viewport_v / 480.0;
-    // Calculate the horizontal and vertical delta vectors from pixel to pixel.
-    let viewport_upper_left = camera_center - Vec3::new(0.0, 0.0, focal_len) - viewport_u/2.0 - viewport_v/2.0;
-    let pixel00_loc = viewport_upper_left + (pixel_delta_u + pixel_delta_v) * 0.5;
+            position_centered().
+            build().
+            unwrap();
+    let mut canvas = window.into_canvas().present_vsync().build().unwrap();
+    let camera = Camera::from_viewport(640, 480, 1);
+    let framebuffer_builder = canvas.texture_creator();
+    let mut framebuffer = framebuffer_builder.create_texture_streaming(PixelFormatEnum::RGB24, camera.width as u32, camera.height as u32).unwrap();
     let mut event_pump = sdl_context.event_pump().unwrap();
     let mut paused : bool = false;
     let sphere = Sphere {
@@ -55,7 +63,6 @@ pub fn main(){
     };
     'running : loop {
         let loop_start = Instant::now();
-        canvas.clear();
         if !paused {
             for event in event_pump.poll_iter(){
                 match event {
@@ -88,29 +95,44 @@ pub fn main(){
             }
         }
         let now = Instant::now();
-        texture.with_lock(None, |buffer: &mut [u8], pitch: usize| {
-            for y in 0..480u16 {
-                for x in 0..640u16 {
+        framebuffer.with_lock(None, |buffer: &mut [u8], pitch: usize| {
+            for y in 0..camera.height {
+                for x in 0..camera.width {
+                    /* let mut color = Rgb::new(0.0, 0.0, 0.0);
+                    for sample in 0..self.samples_per_pix {
+                        let ray = self.get_ray(x, y);
+                        color += calculate_ray(&ray, &spheres);
+                    } */
+                    let ray = camera.get_ray(x, y);
+                    let color = calculate_ray(&ray, &sphere);
                     let offset = (y as usize) * pitch + (x  as usize) * 3;
-                    let pixel_center = pixel00_loc + (pixel_delta_v * (y as f32)) + (pixel_delta_u * (x as f32));
-                    let ray_direction = pixel_center - camera_center;
-                    let ray = Ray::new(&camera_center, &ray_direction);
-                    let color = calculate_ray(&ray, &sphere).to_rgb();
-                    buffer[offset + 0] = color.0;
-                    buffer[offset + 1] = color.1;
-                    buffer[offset + 2] = color.2;
+                    //color /= (self.samples_per_pix as f32);
+                    //let rgb =  color.to_rgb();
+                    let rgb = quantize_n_bit_ordered_dithering::<2>(&color, x, y);
+                    //Safety: Bounds checked by loops
+                    unsafe {
+                        { 
+                            let buf_r = buffer.get_unchecked_mut(offset + 0);
+                            *buf_r = rgb.0;
+                        }
+                        {
+                            let buf_g = buffer.get_unchecked_mut(offset + 1);
+                            *buf_g = rgb.1;
+                        }
+                        {
+                            let buf_b = buffer.get_unchecked_mut(offset + 2);
+                            *buf_b = rgb.2;
+                        }
+                    }
                 }
             }
         });
-        canvas.copy(&texture, None, None).unwrap();
-        canvas.present();
         let duration = now.elapsed();
         let loop_time = loop_start.elapsed();
+        canvas.copy(&framebuffer, None, None).unwrap();
+        canvas.present();
         println!("It took {} ms to render the frame", duration.as_millis());
         println!("The loop took {} ms to run", loop_time.as_millis());
-        //println!("Canvas presented");
         std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
     }
-    //let surface = Surface::new(640, 480, PixelFormatEnum::RGB24).unwrap();
-    //let texture = surface.as_texture(&texture_builder).unwrap()
 }
