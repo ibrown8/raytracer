@@ -97,38 +97,7 @@ pub fn main(){
             }
         }
         let now = Instant::now();
-        /* framebuffer.with_lock(None, |buffer: &mut [u8], pitch: usize| {
-            for y in 0..camera.height {
-                for x in 0..camera.width {
-                    /* let mut color = Rgb::new(0.0, 0.0, 0.0);
-                    for sample in 0..self.samples_per_pix {
-                        let ray = self.get_ray(x, y);
-                        color += calculate_ray(&ray, &spheres);
-                    } */
-                    let ray = camera.get_ray(x, y);
-                    let color = calculate_ray(&ray, &sphere);
-                    let offset = (y as usize) * pitch + (x  as usize) * 3;
-                    //color /= (self.samples_per_pix as f32);
-                    //let rgb =  color.to_rgb();
-                    let rgb = quantize_n_bit_ordered_dithering::<2>(&color, x, y);
-                    //Safety: Bounds checked by loops
-                    unsafe {
-                        { 
-                            let buf_r = buffer.get_unchecked_mut(offset + 0);
-                            *buf_r = rgb.0;
-                        }
-                        {
-                            let buf_g = buffer.get_unchecked_mut(offset + 1);
-                            *buf_g = rgb.1;
-                        }
-                        {
-                            let buf_b = buffer.get_unchecked_mut(offset + 2);
-                            *buf_b = rgb.2;
-                        }
-                    }
-                }
-            }
-        }); */
+        //Parallelize because raytracing is embarassingly parallel.
         framebuffer.with_lock(None, |buffer: &mut [u8], pitch: usize| {
             buffer.par_chunks_exact_mut(pitch).enumerate().for_each(|(y, scanline)| {
                 for x in 0..camera.width {
