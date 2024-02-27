@@ -11,6 +11,8 @@ use sdl2::pixels::{PixelFormatEnum, Color};
 use sdl2::video::{Window, WindowContext};
 use sdl2::VideoSubsystem;
 use core::cmp::{min, max};
+use rayon::prelude::*;
+use rayon::slice::{ParallelSliceMut, ChunksExactMut};
 //Based on https://raytracing.github.io/books/RayTracingInOneWeekend.html
 fn calculate_ray(ray : &Ray, sphere : &Sphere) -> Color3 {
     if let Some(hit) = sphere.hit(ray, 0.0, 1000000.0){
@@ -95,7 +97,7 @@ pub fn main(){
             }
         }
         let now = Instant::now();
-        framebuffer.with_lock(None, |buffer: &mut [u8], pitch: usize| {
+        /* framebuffer.with_lock(None, |buffer: &mut [u8], pitch: usize| {
             for y in 0..camera.height {
                 for x in 0..camera.width {
                     /* let mut color = Rgb::new(0.0, 0.0, 0.0);
@@ -126,6 +128,30 @@ pub fn main(){
                     }
                 }
             }
+        }); */
+        framebuffer.with_lock(None, |buffer: &mut [u8], pitch: usize| {
+            buffer.par_chunks_exact_mut(pitch).enumerate().for_each(|(y, scanline)| {
+                for x in 0..camera.width {
+                    let ray = camera.get_ray(x, y as u16);
+                    let color = calculate_ray(&ray, &sphere);
+                    let offset = (x as usize) * 3;
+                    let rgb = quantize_n_bit_ordered_dithering::<2>(&color, x, y as u16);
+                    unsafe {
+                        { 
+                            let buf_r = scanline.get_unchecked_mut(offset + 0);
+                            *buf_r = rgb.0;
+                        }
+                        {
+                            let buf_g = scanline.get_unchecked_mut(offset + 1);
+                            *buf_g = rgb.1;
+                        }
+                        {
+                            let buf_b = scanline.get_unchecked_mut(offset + 2);
+                            *buf_b = rgb.2;
+                        }
+                    }
+                }
+            });
         });
         let duration = now.elapsed();
         let loop_time = loop_start.elapsed();

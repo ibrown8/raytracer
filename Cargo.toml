@@ -6,8 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-geometric = {path = "../geometric"}
+#geometric = {path = "../geometric"}
+#geometric_algebra = "0.3.0"
+unroll = "0.1.5"
 sdl2 = "0.35.2"
+rand = {version = "0.8.5", features = ["std"]}
+rayon = "1.8.0"
 
 [[bin]]
 name = "raytracer_demo"
